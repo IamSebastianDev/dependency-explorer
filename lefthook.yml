@@ -1,0 +1,10 @@
+pre-commit:
+  commands:
+    lint:
+      run: bun prettier --check . && bun eslint .
+    format:
+      run: bun prettier --write .
+commit-msg:
+  commands:
+    lint:
+      run: bunx commitlint --edit
