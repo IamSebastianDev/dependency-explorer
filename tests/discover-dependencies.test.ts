@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createExplorerProject } from '../src/lib/create-explorer-project';
 import { discoverDependencies, repositoryUrl } from '../src/lib/discover-dependencies';
+import { createNavigation, documentedPackages } from '../src/lib/explorer-routes';
 import { preserveEscapedTemplatePlaceholders } from '../src/markdown-transforms';
 import { ExplorerOutline } from '../src/components/outline';
 import { PackageInfo } from '../src/components/package-info';
@@ -98,6 +99,143 @@ describe('discoverDependencies', () => {
         }
     });
 
+    test('discovers hoisted dependencies from every declared workspace', async () => {
+        const root = await mkdtemp(join(tmpdir(), 'explorer-workspaces-'));
+        await writePackage(root, {
+            name: 'workspace-fixture',
+            workspaces: ['apps/*'],
+        });
+        await writePackage(join(root, 'apps', 'web'), {
+            name: '@fixture/web',
+            dependencies: { alpha: '^1.0.0' },
+        });
+        await writePackage(join(root, 'apps', 'api'), {
+            name: '@fixture/api',
+            dependencies: { beta: '^2.0.0' },
+        });
+        await writePackage(
+            join(root, 'node_modules', 'alpha'),
+            {
+                name: 'alpha',
+                version: '1.0.0',
+                dependencies: { shared: '^3.0.0' },
+            },
+            '# Alpha',
+        );
+        await writePackage(
+            join(root, 'node_modules', 'beta'),
+            {
+                name: 'beta',
+                version: '2.0.0',
+                dependencies: { shared: '^3.0.0' },
+            },
+            '# Beta',
+        );
+        await writePackage(
+            join(root, 'node_modules', 'shared'),
+            {
+                name: 'shared',
+                version: '3.0.0',
+            },
+            '# Shared',
+        );
+        await writePackage(join(root, 'node_modules', 'orphaned'), {
+            name: 'orphaned',
+            version: '1.0.0',
+        });
+
+        try {
+            const project = await discoverDependencies(root);
+
+            expect(project.workspaces.map(({ name }) => name)).toEqual([
+                'workspace-fixture',
+                '@fixture/api',
+                '@fixture/web',
+            ]);
+            expect(project.packages.map(({ name }) => name)).toEqual(['alpha', 'beta', 'shared']);
+            expect(
+                project.workspaces.find(({ name }) => name === '@fixture/web')?.groups
+                    .dependencies?.[0]?.package.name,
+            ).toBe('alpha');
+            expect(
+                project.workspaces.find(({ name }) => name === '@fixture/api')?.groups
+                    .dependencies?.[0]?.package.name,
+            ).toBe('beta');
+            expect(project.packages.find(({ name }) => name === 'shared')?.workspaces).toEqual([
+                '@fixture/api',
+                '@fixture/web',
+            ]);
+            const navigation = createNavigation(project, documentedPackages(project.packages));
+            expect(
+                navigation.find(({ label }) => label === '@fixture/web')?.children?.[0]?.label,
+            ).toBe('Runtime dependencies');
+        } finally {
+            await rm(root, { recursive: true, force: true });
+        }
+    });
+
+    test('supports object-form workspace declarations', async () => {
+        const root = await mkdtemp(join(tmpdir(), 'explorer-workspace-object-'));
+        await writePackage(root, {
+            name: 'workspace-object-fixture',
+            workspaces: { packages: ['packages/*'] },
+        });
+        await writePackage(join(root, 'packages', 'tool'), {
+            name: '@fixture/tool',
+            dependencies: { alpha: '^1.0.0' },
+        });
+        await writePackage(join(root, 'node_modules', 'alpha'), {
+            name: 'alpha',
+            version: '1.0.0',
+        });
+
+        try {
+            const project = await discoverDependencies(root);
+            expect(project.workspaces.map(({ name }) => name)).toEqual([
+                'workspace-object-fixture',
+                '@fixture/tool',
+            ]);
+            expect(project.packages[0]?.workspaces).toEqual(['@fixture/tool']);
+        } finally {
+            await rm(root, { recursive: true, force: true });
+        }
+    });
+
+    test('merges workspace metadata for duplicate physical installs of one package version', async () => {
+        const root = await mkdtemp(join(tmpdir(), 'explorer-workspace-duplicates-'));
+        await writePackage(root, {
+            name: 'duplicate-fixture',
+            workspaces: ['apps/*'],
+        });
+        for (const app of ['api', 'web']) {
+            const workspace = join(root, 'apps', app);
+            await writePackage(workspace, {
+                name: `@fixture/${app}`,
+                dependencies: { duplicate: '^1.0.0' },
+            });
+            await writePackage(
+                join(workspace, 'node_modules', 'duplicate'),
+                {
+                    name: 'duplicate',
+                    version: '1.0.0',
+                },
+                `# Duplicate from ${app}`,
+            );
+        }
+
+        try {
+            const project = await discoverDependencies(root);
+            expect(project.packages.filter(({ name }) => name === 'duplicate')).toHaveLength(2);
+
+            const documented = documentedPackages(project.packages);
+            expect(documented).toHaveLength(1);
+            expect(documented[0]?.workspaces).toEqual(['@fixture/api', '@fixture/web']);
+            expect(documented[0]?.root).toEndWith('apps/api/node_modules/duplicate');
+        } finally {
+            await rm(root, { recursive: true, force: true });
+        }
+    });
+
     test('skips malformed dependency manifests with a contextual warning', async () => {
         const root = await mkdtemp(join(tmpdir(), 'explorer-malformed-'));
         await writePackage(root, { name: 'malformed-fixture', dependencies: { broken: '1.0.0' } });
@@ -181,6 +319,13 @@ describe('discoverDependencies', () => {
         expect(page).not.toContain('## Relationships');
         expect(page).not.toContain('## README');
         expect(page).toContain('/package-assets/alpha/1.0.0/logo.svg');
+        const metadata = JSON.parse(
+            Buffer.from(
+                page.match(/^dependencyExplorer: "([^"]+)"$/m)?.[1] ?? '',
+                'base64url',
+            ).toString(),
+        ) as { badges: string[] };
+        expect(metadata.badges).toContain('Used by fixture');
         expect(config).toContain("component: () => import('./components/sidebar')");
         expect(config).toBe(sourceConfig);
         expect(config).not.toContain('JSON.stringify');

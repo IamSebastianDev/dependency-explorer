@@ -53,9 +53,12 @@ export const packageDocument = async (dependency: DependencyPackage, publicRoot:
     const explorerMeta = encode({
         name: dependency.name,
         version: dependency.version,
-        badges: dependency.directKinds.length
-            ? dependency.directKinds.map((kind) => groupLabels[kind])
-            : ['Transitive'],
+        badges: [
+            ...(dependency.directKinds.length
+                ? dependency.directKinds.map((kind) => groupLabels[kind])
+                : ['Transitive']),
+            ...dependency.workspaces.map((workspace) => `Used by ${workspace}`),
+        ],
         actions: packageActions(dependency),
     });
 

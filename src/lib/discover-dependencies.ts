@@ -1,5 +1,6 @@
 import { access, readFile, realpath } from 'node:fs/promises';
-import { dirname, join, parse, resolve } from 'node:path';
+import { dirname, join, parse, relative, resolve } from 'node:path';
+import { glob } from 'tinyglobby';
 import { createLimiter } from './concurrency';
 
 export type DependencyKind =
@@ -31,6 +32,7 @@ export type DependencyPackage = {
     requirements: string[];
     dependencies: string[];
     dependents: string[];
+    workspaces: string[];
     entrypoints: DependencyEntrypoints;
     engines: Record<string, string>;
 };
@@ -40,12 +42,21 @@ export type DependencyBranch = {
     children: DependencyBranch[];
 };
 
+export type DependencyWorkspace = {
+    name: string;
+    version?: string;
+    root: string;
+    relativeRoot: string;
+    groups: Partial<Record<DependencyKind, DependencyBranch[]>>;
+};
+
 export type DependencyProject = {
     name: string;
     version?: string;
     root: string;
     packages: DependencyPackage[];
     groups: Partial<Record<DependencyKind, DependencyBranch[]>>;
+    workspaces: DependencyWorkspace[];
     warnings: string[];
 };
 
@@ -66,7 +77,16 @@ type PackageJson = {
     devDependencies?: Record<string, string>;
     optionalDependencies?: Record<string, string>;
     peerDependencies?: Record<string, string>;
+    workspaces?: string[] | { packages?: string[] };
     repository?: string | { url?: string; directory?: string };
+};
+
+type WorkspaceManifest = {
+    name: string;
+    version?: string;
+    root: string;
+    relativeRoot: string;
+    pkg: PackageJson;
 };
 
 const dependencyKinds: DependencyKind[] = [
@@ -181,6 +201,62 @@ const uniquePush = <T>(items: T[], value: T | undefined) => {
     if (value !== undefined && !items.includes(value)) items.push(value);
 };
 
+const declaredWorkspacePatterns = (workspaces: PackageJson['workspaces']) =>
+    Array.isArray(workspaces) ? workspaces : (workspaces?.packages ?? []);
+
+const workspaceManifestPatterns = (patterns: string[]) =>
+    patterns.map((pattern) => {
+        const excluded = pattern.startsWith('!');
+        const directory = (excluded ? pattern.slice(1) : pattern).replace(/\/+$/, '');
+        return `${excluded ? '!' : ''}${directory}/package.json`;
+    });
+
+const discoverWorkspaces = async (
+    root: string,
+    rootPackage: PackageJson,
+    warnings: string[],
+): Promise<WorkspaceManifest[]> => {
+    const rootWorkspace: WorkspaceManifest = {
+        name: rootPackage.name ?? 'Root project',
+        version: rootPackage.version,
+        root,
+        relativeRoot: '.',
+        pkg: rootPackage,
+    };
+    const patterns = declaredWorkspacePatterns(rootPackage.workspaces);
+    if (patterns.length === 0) return [rootWorkspace];
+
+    const manifests = await glob(workspaceManifestPatterns(patterns), {
+        absolute: true,
+        cwd: root,
+        dot: true,
+        followSymbolicLinks: false,
+        onlyFiles: true,
+        ignore: ['**/node_modules/**'],
+    });
+    const workspaces = [rootWorkspace];
+    for (const manifest of manifests.toSorted()) {
+        const workspaceRoot = dirname(manifest);
+        if (resolve(workspaceRoot) === root) continue;
+        try {
+            const pkg = await readPackageJson(workspaceRoot);
+            const relativeRoot = relative(root, workspaceRoot);
+            workspaces.push({
+                name: pkg.name ?? relativeRoot,
+                version: pkg.version,
+                root: workspaceRoot,
+                relativeRoot,
+                pkg,
+            });
+        } catch (error) {
+            warnings.push(
+                `Skipped workspace at ${workspaceRoot}: ${error instanceof Error ? error.message : String(error)}`,
+            );
+        }
+    }
+    return workspaces;
+};
+
 export const discoverDependencies = async (
     projectRoot = process.cwd(),
 ): Promise<DependencyProject> => {
@@ -195,13 +271,14 @@ export const discoverDependencies = async (
         );
     }
 
+    const warnings: string[] = [];
+    const workspaceManifests = await discoverWorkspaces(root, rootPackage, warnings);
     const packages = new Map<string, DependencyPackage>();
     const packageLoads = new Map<
         string,
         Promise<{ dependency: DependencyPackage; pkg: PackageJson } | undefined>
     >();
     const expanded = new Set<string>();
-    const warnings: string[] = [];
 
     const loadPackage = (packageRoot: string, requestedName: string) => {
         const existing = packageLoads.get(packageRoot);
@@ -249,6 +326,7 @@ export const discoverDependencies = async (
                 requirements: [],
                 dependencies: [],
                 dependents: [],
+                workspaces: [],
                 entrypoints: {
                     main: pkg.main,
                     module: pkg.module,
@@ -272,6 +350,7 @@ export const discoverDependencies = async (
         name,
         parentId,
         requirement,
+        workspace,
     }: {
         ancestors: Set<string>;
         directKind?: DependencyKind;
@@ -279,6 +358,7 @@ export const discoverDependencies = async (
         name: string;
         parentId?: string;
         requirement?: string;
+        workspace: WorkspaceManifest;
     }): Promise<DependencyPackage | undefined> => {
         const packageRoot = await findPackageRoot(from, name);
         if (!packageRoot) return undefined;
@@ -291,6 +371,7 @@ export const discoverDependencies = async (
         uniquePush(dependency.directKinds, directKind);
         uniquePush(dependency.requirements, requirement);
         uniquePush(dependency.dependents, parentId);
+        uniquePush(dependency.workspaces, workspace.name);
         if (parentId) {
             const parent = packages.get(parentId);
             if (!parent)
@@ -298,8 +379,9 @@ export const discoverDependencies = async (
             uniquePush(parent.dependencies, id);
         }
 
-        if (ancestors.has(id) || expanded.has(id)) return dependency;
-        expanded.add(id);
+        const expansionId = `${workspace.root}\0${id}`;
+        if (ancestors.has(id) || expanded.has(expansionId)) return dependency;
+        expanded.add(expansionId);
 
         const nextAncestors = new Set(ancestors).add(id);
         // Peer dependencies describe host requirements and are intentionally not installed children.
@@ -313,6 +395,7 @@ export const discoverDependencies = async (
                         from: packageRoot,
                         parentId: id,
                         ancestors: nextAncestors,
+                        workspace,
                     }),
                 ),
         );
@@ -321,31 +404,46 @@ export const discoverDependencies = async (
     };
 
     const groupPackages: Partial<Record<DependencyKind, DependencyPackage[]>> = {};
-    for (const kind of dependencyKinds) {
-        const dependencies = Object.entries(rootPackage[kind] ?? {}).toSorted(([left], [right]) =>
-            left.localeCompare(right),
-        );
-        if (dependencies.length === 0) continue;
-        groupPackages[kind] = (
-            await Promise.all(
-                dependencies.map(([name, range]) =>
-                    visit({
-                        name,
-                        requirement: range,
-                        directKind: kind,
-                        from: root,
-                        ancestors: new Set(),
-                    }),
-                ),
-            )
-        ).filter((dependency): dependency is DependencyPackage => dependency !== undefined);
-    }
+    const workspaceGroupPackages = new Map<
+        string,
+        Partial<Record<DependencyKind, DependencyPackage[]>>
+    >();
+    await Promise.all(
+        workspaceManifests.map(async (workspace) => {
+            const workspaceGroups: Partial<Record<DependencyKind, DependencyPackage[]>> = {};
+            for (const kind of dependencyKinds) {
+                const dependencies = Object.entries(workspace.pkg[kind] ?? {}).toSorted(
+                    ([left], [right]) => left.localeCompare(right),
+                );
+                if (dependencies.length === 0) continue;
+                const resolvedDependencies = (
+                    await Promise.all(
+                        dependencies.map(([name, range]) =>
+                            visit({
+                                name,
+                                requirement: range,
+                                directKind: kind,
+                                from: workspace.root,
+                                ancestors: new Set(),
+                                workspace,
+                            }),
+                        ),
+                    )
+                ).filter((dependency): dependency is DependencyPackage => dependency !== undefined);
+                workspaceGroups[kind] = resolvedDependencies;
+                const aggregated = (groupPackages[kind] ??= []);
+                for (const dependency of resolvedDependencies) uniquePush(aggregated, dependency);
+            }
+            workspaceGroupPackages.set(workspace.root, workspaceGroups);
+        }),
+    );
 
     for (const dependency of packages.values()) {
         dependency.directKinds.sort();
         dependency.requirements.sort();
         dependency.dependencies.sort();
         dependency.dependents.sort();
+        dependency.workspaces.sort();
     }
 
     const branchFor = (
@@ -362,12 +460,24 @@ export const discoverDependencies = async (
                 .map((child) => branchFor(child, nextAncestors)),
         };
     };
-    const groups = Object.fromEntries(
-        Object.entries(groupPackages).map(([kind, dependencies]) => [
-            kind,
-            dependencies.map((dependency) => branchFor(dependency)),
-        ]),
-    ) as DependencyProject['groups'];
+    const createGroups = (source: Partial<Record<DependencyKind, DependencyPackage[]>>) =>
+        Object.fromEntries(
+            Object.entries(source).map(([kind, dependencies]) => [
+                kind,
+                dependencies.map((dependency) => branchFor(dependency)),
+            ]),
+        ) as DependencyProject['groups'];
+
+    const groups = createGroups(groupPackages);
+    const workspaces = workspaceManifests.map(
+        ({ name, version, root: workspaceRoot, relativeRoot }) => ({
+            name,
+            version,
+            root: workspaceRoot,
+            relativeRoot,
+            groups: createGroups(workspaceGroupPackages.get(workspaceRoot) ?? {}),
+        }),
+    );
 
     return {
         name: rootPackage.name ?? 'Project',
@@ -378,6 +488,7 @@ export const discoverDependencies = async (
                 left.name.localeCompare(right.name) || left.version.localeCompare(right.version),
         ),
         groups,
+        workspaces,
         warnings: warnings.toSorted(),
     };
 };

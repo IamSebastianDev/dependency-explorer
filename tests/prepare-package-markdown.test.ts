@@ -21,6 +21,7 @@ const dependency: DependencyPackage = {
     requirements: [],
     dependencies: [],
     dependents: [],
+    workspaces: [],
     entrypoints: { exports: [], binaries: [] },
     engines: {},
 };

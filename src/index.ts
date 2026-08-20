@@ -9,4 +9,5 @@ export {
     type DependencyKind,
     type DependencyPackage,
     type DependencyProject,
+    type DependencyWorkspace,
 } from './lib/discover-dependencies';

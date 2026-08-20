@@ -14,6 +14,7 @@ The generated explorer includes:
 
 - Separate runtime, development, optional, and peer dependency sections
 - A grouped package sidebar and full-text documentation search
+- Workspace-aware discovery with package usage badges for monorepos
 - Exact installed versions and direct or transitive dependency status
 - Repository, homepage, and bundled changelog links when packages provide them
 - Bundled changelogs when packages ship them
