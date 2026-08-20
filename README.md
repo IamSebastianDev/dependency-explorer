@@ -1,38 +1,58 @@
-# sv
+# Explører
 
-Everything you need to build a Svelte project, powered by [`sv`](https://github.com/sveltejs/cli).
+> This repo was basically entirely vibe coded. No in depth review was performed, and this serves mostly as interesting proof of concept. Use at your own risk.
 
-## Creating a project
+Instant local documentation for the packages installed in a JavaScript project.
 
-If you're seeing this, you've probably already done this step. Congrats!
-
-```bash
-# create a new project in the current directory
-npx sv create
-
-# create a new project in my-app
-npx sv create my-app
+```sh
+npx @iasd/explorer
 ```
 
-## Developing
+Explører walks the installed dependency tree, collects every bundled package README, and serves a temporary searchable [Aurora](https://aurora.nordjs.dev) documentation site. It documents the versions that are actually installed—not whichever version happens to be latest online.
 
-Once you've created a project and installed dependencies with `npm install` (or `pnpm install` or `yarn`), start a development server:
+The generated explorer includes:
 
-```bash
-npm run dev
+- Separate runtime, development, optional, and peer dependency sections
+- A grouped package sidebar and full-text documentation search
+- Exact installed versions and direct or transitive dependency status
+- Repository, homepage, and bundled changelog links when packages provide them
+- Bundled changelogs when packages ship them
+- Locally copied README images and stable links for other package files
+- A responsive, accessible interface built with Aurora and Nørd
 
-# or start the server and open the app in a new browser tab
-npm run dev -- --open
+The temporary site is deleted during normal shutdown. An abrupt process termination may leave its isolated directory in the operating system's temporary folder. Explører does not modify the inspected project.
+
+Pass another project directory when needed:
+
+```sh
+npx @iasd/explorer ../my-project --open
 ```
 
-## Building
+Use `--host` and `--port` to change the local server address.
 
-To create a production version of your app:
+The target project must have a `package.json` and installed dependencies.
 
-```bash
-npm run build
+## Programmatic use
+
+```ts
+import { createExplorerProject, discoverDependencies } from '@iasd/explorer';
+
+const dependencyTree = await discoverDependencies(process.cwd());
+const site = await createExplorerProject({ root: process.cwd() });
+
+console.log(site.root, site.packageCount);
+await site.remove();
 ```
 
-You can preview the production build with `npm run preview`.
+`discoverDependencies` returns normalized package metadata and graph relationships. `createExplorerProject` materializes an Aurora project that can be passed to Aurora's programmatic `dev` or `build` functions.
 
-> To deploy your app, you may need to install an [adapter](https://svelte.dev/docs/kit/adapters) for your target environment.
+## Development
+
+Install dependencies and the repository's Git hooks:
+
+```sh
+bun install
+bun run hooks:install
+```
+
+Lefthook checks formatting and linting before commits, validates Conventional Commit messages, and runs the type-check and tests before pushes.

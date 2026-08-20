@@ -1,10 +1,20 @@
 pre-commit:
-  commands:
-    lint:
-      run: bun prettier --check . && bun eslint .
-    format:
-      run: bun prettier --write .
+    parallel: true
+    commands:
+        format:
+            run: bun run format:check
+        lint:
+            run: bun run lint
+
 commit-msg:
-  commands:
-    lint:
-      run: bunx commitlint --edit
+    commands:
+        commitlint:
+            run: bunx commitlint --edit {1}
+
+pre-push:
+    parallel: true
+    commands:
+        types:
+            run: bun run check
+        tests:
+            run: bun test
