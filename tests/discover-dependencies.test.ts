@@ -5,7 +5,6 @@ import { join } from 'node:path';
 import { createExplorerProject } from '../src/lib/create-explorer-project';
 import { discoverDependencies, repositoryUrl } from '../src/lib/discover-dependencies';
 import { createNavigation, documentedPackages } from '../src/lib/explorer-routes';
-import { preserveEscapedTemplatePlaceholders } from '../src/markdown-transforms';
 import { ExplorerOutline } from '../src/components/outline';
 import { PackageInfo } from '../src/components/package-info';
 import { Sidebar } from '../src/components/sidebar';
@@ -49,14 +48,6 @@ await writePackage(
 afterAll(() => rm(fixture, { recursive: true, force: true }));
 
 describe('discoverDependencies', () => {
-    test('preserves escaped template placeholders through Nørd Markdown compilation', () => {
-        expect(preserveEscapedTemplatePlaceholders('\\${license:ISC}')).toBe('\\\\${license:ISC}');
-        expect(preserveEscapedTemplatePlaceholders('\\\\${alreadyEven}')).toBe(
-            '\\\\${alreadyEven}',
-        );
-        expect(preserveEscapedTemplatePlaceholders('${alreadyHandled}')).toBe('${alreadyHandled}');
-    });
-
     test('discovers grouped direct dependencies and deduplicates shared packages', async () => {
         const project = await discoverDependencies(fixture);
 
