@@ -1,5 +1,11 @@
 # @iasd/explorer
 
+## 1.1.1
+
+### Patch Changes
+
+- 7854b3a: Normalize escaped backticks in third-party README code fences so they remain valid when Aurora compiles the rendered Markdown into template literals.
+
 ## 1.1.0
 
 ### Minor Changes
